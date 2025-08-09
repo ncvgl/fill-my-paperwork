@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <title>Fill My Paperwork</title>
+
+    <!-- Handwritten font: self-host preferred (drop Satisfy.woff2 into ./fonts/), Google Fonts as fallback -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" href="fonts/Satisfy.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="fonts/Satisfy.ttf" as="font" type="font/ttf" crossorigin>
+    <style>
+      @font-face {
+        font-family: 'Satisfy';
+        src: url('fonts/Satisfy.woff2') format('woff2'), url('fonts/Satisfy.ttf') format('truetype');
+        font-display: swap;
+      }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Satisfy&display=swap" rel="stylesheet">
+
+    <!-- Fabric.js for canvas editing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
+
+    <!-- PDF.js for reading PDFs -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+    <!-- jsPDF for writing PDFs -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+    <style>
+        body { font-family: sans-serif; margin: 20px; }
+        canvas { border: 1px solid #ccc; }
+        button, input, select, label { margin: 10px 10px 10px 0; }
+        .container { max-width: 1100px; margin: 0 auto; }
+        .stage { width: 800px; margin: 0 auto; }
+        .header { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin-bottom: 8px; }
+        .title { grid-column: 2; text-align: center; margin: 0; }
+        .workspace { display: flex; gap: 16px; align-items: flex-start; justify-content: center; }
+        .loading { display: none; color: #555; }
+        .detect-status { display: inline-block; min-width: 150px; margin-left: 6px; color: #555; }
+        .contact { grid-column: 3; justify-self: end; color: #888; margin: 0; font-size: 12px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .contact a { color: #888; text-decoration: none; }
+        .contact a:hover { text-decoration: underline; }
+        .tagline { grid-column: 1; justify-self: start; color: #888; margin: 0; font-size: 12px; white-space: nowrap; }
+        .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0 12px; }
+        .toolbar.top { justify-content: flex-start; }
+        .toolbar.actions { justify-content: flex-start; gap: 6px; }
+        /* keep download near other buttons */
+        .file-control { display: flex; align-items: center; gap: 8px; }
+        .hidden-input { display: none; }
+        .file-name { max-width: 146px; display: inline-block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #555; vertical-align: middle; }
+        .toolbar.actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+        h2 { text-align: center; }
+    </style>
+</head>
+<body>
+<div class="container">
+  <div class="stage">
+  <div class="header">
+    <div class="tagline">Free • No Login • No Storage</div>
+    <h2 class="title">Fill My Paperwork</h2>
+    <div class="contact">Contact: <a href="https://ncvgl.github.io" target="_blank" rel="noopener noreferrer">ntathan.cavaglione@gmail.com</a></div>
+  </div>
+  <div class="toolbar top">
+    <label class="file-control">
+      <button type="button" id="chooseFileBtn">Choose file</button>
+      <input class="hidden-input" type="file" id="upload" accept=".jpg,.jpeg,.png,.pdf" />
+      <span id="fileName" class="file-name">No file chosen</span>
+    </label>
+
+    <label for="fontSelect">Font:</label>
+    <select id="fontSelect">
+      <option value="Satisfy" selected>Handwritten</option>
+      <option value="Arial">Typed</option>
+    </select>
+    <label for="fontSize">Font size:</label>
+    <input type="number" id="fontSize" value="20" min="8" max="96" step="1" style="width:40px" />
+
+    <label for="colorSelect">Ink:</label>
+    <select id="colorSelect">
+    <option value="#000000">Black (BIC)</option>
+    <option value="#0057B8">Blue (BIC)</option>
+    <option value="#D32F2F">Red (BIC)</option>
+    <option value="#007A33">Green (BIC)</option>
+    <option value="#6E6E6E">Pencil Grey</option>
+    </select>
+  </div>
+
+  <div class="toolbar actions">
+    <button id="detectBtn" onclick="detectButtonClick()">Detect Fields</button>
+    <span id="detectStatus" class="detect-status" aria-live="polite" style="min-width:100px;margin-left:4px"></span>
+    <button onclick="addText()">Add Text</button>
+    <button onclick="undo()">Undo (Ctrl+Z)</button>
+    <button id="drawBtn" onclick="toggleDraw()">Draw (signature)</button>
+    <button id="downloadBtn" class="download" onclick="download()">Download</button>
+    <button id="prevBtn" title="Previous page">◀</button>
+    <button id="nextBtn" title="Next page">▶</button>
+  </div>
+  <div id="pageIndicator" class="page-indicator" style="text-align:right; font-size:12px; color:#555; min-height: 16px;"></div>
+
+  <div class="workspace">
+    <canvas id="c" width="800" height="1000"></canvas>
+  </div>
+  </div>
+</div>
+
+<script>
+    const canvas = new fabric.Canvas('c');
+    // Expose for tests/automation
+    window.canvas = canvas;
+    let clipboard = null;
+    window.isPDF = false;  // track input type
+    const API_BASE = window.LOCAL_API_URL || 'http://localhost:5001';
+    // Ensure a web font is loaded before rendering text
+    const fontLoadCache = new Map();
+    function ensureFontLoaded(fontFamily) {
+        if (!('fonts' in document) || typeof document.fonts.load !== 'function') {
+            return Promise.resolve();
+        }
+        const key = fontFamily || '';
+        if (fontLoadCache.has(key)) return fontLoadCache.get(key);
+        const p = document.fonts.load(`16px "${fontFamily}"`).catch(() => {});
+        fontLoadCache.set(key, p);
+        return p;
+    }
+    const API_URL = API_BASE + '/api/form/detect';
+    let lastUploadedBlob = null; // file or blob we will send to backend
+    const detectStatusEl = document.getElementById('detectStatus');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const pageIndicator = document.getElementById('pageIndicator');
+    const detectBtn = document.getElementById('detectBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    // Multi-page management
+    let pages = [];        // array of dataURLs for background images
+    let pageStates = [];   // array of serialized canvas JSON per page
+    let currentPageIndex = -1;
+    let currentBgUrl = null; // track which bg is currently rendered
+
+    function updatePageIndicator() {
+        if (pages.length <= 1) {
+            pageIndicator.textContent = '';
+        } else {
+            pageIndicator.textContent = `Page ${currentPageIndex + 1} / ${pages.length}`;
+        }
+    }
+
+    function refreshUIState() {
+        const hasDoc = pages.length >= 1;
+        detectBtn.disabled = !hasDoc;
+        downloadBtn.disabled = !hasDoc;
+        const multi = pages.length > 1;
+        prevBtn.disabled = !multi || currentPageIndex <= 0;
+        nextBtn.disabled = !multi || currentPageIndex >= (pages.length - 1);
+    }
+
+    function saveCurrentPageState() {
+        if (currentPageIndex >= 0) {
+            pageStates[currentPageIndex] = JSON.stringify(canvas.toJSON(['selectable','evented']));
+        }
+    }
+
+    function displayPage(index) {
+        return new Promise((resolve) => {
+            const bgUrl = pages[index];
+            // If already showing the same page/background, just refresh UI
+            if (index === currentPageIndex && canvas.backgroundImage && currentBgUrl === bgUrl) {
+                updatePageIndicator(); refreshUIState(); return resolve();
+            }
+            saveCurrentPageState();
+            fabric.Image.fromURL(bgUrl, function(img){
+                canvas.clear();
+                const scaleX = canvas.width / img.width;
+                const scaleY = canvas.height / img.height;
+                img.set({ scaleX, scaleY });
+                canvas.setBackgroundImage(img, async () => {
+                    const state = pageStates[index];
+                    currentPageIndex = index;
+                    currentBgUrl = bgUrl;
+                    if (state) {
+                        canvas.loadFromJSON(state, () => { canvas.renderAll(); updatePageIndicator(); refreshUIState(); resolve(); });
+                    } else {
+                        canvas.renderAll(); updatePageIndicator(); refreshUIState(); resolve();
+                    }
+                });
+            });
+        });
+    }
+    
+    // Undo functionality
+    let history = [];
+    let historyStep = -1;
+    const maxHistorySize = 50;
+
+    const fontSelect = document.getElementById('fontSelect');
+    const colorSelect = document.getElementById('colorSelect');
+    const fontSizeInput = document.getElementById('fontSize');
+    const drawBtn = document.getElementById('drawBtn');
+    let addTextCount = 0; // used to slightly offset new manual text positions
+    
+    // Save state to history
+    function saveState() {
+        historyStep++;
+        if (historyStep < history.length) {
+            history.length = historyStep;
+        }
+        history[historyStep] = JSON.stringify(canvas.toJSON(['selectable', 'evented']));
+        
+        // Limit history size
+        if (history.length > maxHistorySize) {
+            history.shift();
+            historyStep--;
+        }
+    }
+    
+    // Undo function
+    function undo() {
+        if (historyStep > 0) {
+            historyStep--;
+            canvas.loadFromJSON(history[historyStep], function() {
+                canvas.renderAll();
+            });
+        }
+    }
+    
+    // Initialize history with empty canvas
+    saveState();
+
+    const uploadInput = document.getElementById('upload');
+    const chooseFileBtn = document.getElementById('chooseFileBtn');
+    const fileNameEl = document.getElementById('fileName');
+
+    chooseFileBtn.addEventListener('click', () => uploadInput.click());
+
+    uploadInput.onchange = async function (e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        // Update file label with truncated name
+        const name = file.name || 'file';
+        fileNameEl.textContent = name;
+
+        window.isPDF = file.type === 'application/pdf';
+
+        const reader = new FileReader();
+
+        // Reset document state before loading new content
+        pages = [];
+        pageStates = [];
+        currentPageIndex = -1;
+        currentBgUrl = null;
+
+        if (window.isPDF) {
+            reader.onload = async function () {
+                const typedarray = new Uint8Array(this.result);
+                const pdf = await pdfjsLib.getDocument({ data: typedarray }).promise;
+                const numPages = pdf.numPages;
+                pages = [];
+                pageStates = new Array(numPages).fill(null);
+                for (let p=1; p<=numPages; p++) {
+                    const page = await pdf.getPage(p);
+                    const viewport = page.getViewport({ scale: 2 });
+                    const pdfCanvas = document.createElement('canvas');
+                    const ctx = pdfCanvas.getContext('2d');
+                    pdfCanvas.width = viewport.width;
+                    pdfCanvas.height = viewport.height;
+                    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+                    const imgDataUrl = pdfCanvas.toDataURL('image/png');
+                    pages.push(imgDataUrl);
+                }
+                lastUploadedBlob = await (await fetch(pages[0])).blob();
+                await displayPage(0);
+            };
+            reader.readAsArrayBuffer(file);
+        } else {
+            reader.onload = function (f) {
+                // Single image
+                pages = [f.target.result];
+                pageStates = [null];
+                currentPageIndex = -1;
+                currentBgUrl = null;
+                displayPage(0).then(async () => { lastUploadedBlob = file; });
+            };
+            reader.readAsDataURL(file);
+        }
+    };
+
+    // Preload a local image to speed up UI testing
+    ;(async function preload() {
+        try {
+            // Use an HTTP-served relative path to avoid file:// CORS issues.
+            // Override by setting window.PRELOAD_URL in the console.
+            const preloadPath = window.PRELOAD_URL || 'dev-preload.jpg';
+            const resp = await fetch(preloadPath, { cache: 'no-store' });
+            if (!resp.ok) return;
+            const blob = await resp.blob();
+            const dataUrl = URL.createObjectURL(blob);
+            // Treat preload as single-page image
+            pages = [dataUrl];
+            pageStates = [null];
+            await displayPage(0);
+            lastUploadedBlob = blob;
+        } catch (e) {
+            // ignore preload failure
+        }
+    })();
+
+    function loadImageToCanvas(dataUrl) {
+        return new Promise((resolve) => {
+            fabric.Image.fromURL(dataUrl, function (img) {
+                canvas.clear();
+                const scaleX = canvas.width / img.width;
+                const scaleY = canvas.height / img.height;
+                img.set({ scaleX, scaleY });
+                canvas.setBackgroundImage(img, () => {
+                    canvas.renderAll();
+                    // Sync UI controls to ensure first Add Text uses current UI values
+                    syncControlsWithSelection();
+                    saveState(); // Save state after loading image
+                    resolve();
+                });
+            });
+        });
+    }
+
+    function getSelectedColor() {
+        return colorSelect.value || '#000000';
+    }
+
+    async function addText() {
+        const font = fontSelect.value;
+        const color = getSelectedColor();
+        // Ensure web font is loaded before creating text (prevents fallback on first use)
+        await ensureFontLoaded(font);
+
+        // Slight jitter/offset so repeated clicks don't overlap exactly
+        const baseLeft = 100;
+        const baseTop = 100;
+        const offset = (addTextCount % 6) * 12; // diagonal drift every click
+        const jitterX = Math.floor(Math.random() * 7) - 3; // -3..+3
+        const jitterY = Math.floor(Math.random() * 7) - 3;
+        const left = Math.max(5, Math.min(canvas.width - 50, baseLeft + offset + jitterX));
+        const top = Math.max(5, Math.min(canvas.height - 20, baseTop + offset + jitterY));
+        addTextCount++;
+
+        const text = new fabric.IText('Edit me', {
+            left,
+            top,
+            fontSize: parseInt(fontSizeInput.value, 10) || 20,
+            fontFamily: font,
+            fill: color
+        });
+
+        canvas.add(text);
+        canvas.setActiveObject(text);
+        saveState(); // Save state after adding text
+    }
+
+    function detectButtonClick() {
+        if (!lastUploadedBlob) {
+            alert('Please upload an image or PDF first.');
+            return;
+        }
+        detectAndPlaceText(lastUploadedBlob);
+    }
+
+    async function detectAndPlaceText(fileOrBlob) {
+        try {
+            // prevent multiple clicks and show loading
+            detectStatusEl.textContent = 'Detecting…';
+            const btns = document.querySelectorAll('button');
+            btns.forEach(b => b.disabled = true);
+
+            const formData = new FormData();
+            // Name must match backend param 'file'
+            const filename = (fileOrBlob && fileOrBlob.name) ? fileOrBlob.name : 'upload.png';
+            formData.append('file', fileOrBlob, filename);
+
+            const resp = await fetch(API_URL, {
+                method: 'POST',
+                body: formData,
+            });
+            if (!resp.ok) {
+                console.warn('Detection failed', resp.status);
+                return;
+            }
+            const result = await resp.json();
+            if (!result || !Array.isArray(result.boxes)) return;
+
+            // draw overlays and ensure new text uses the selected font
+            overlayBoxes(result);
+            result._selectedFont = fontSelect.value;
+            autoPlaceTexts(result);
+            const ms = (result.timings_ms && result.timings_ms.total_ms) ? result.timings_ms.total_ms : null;
+            if (ms !== null) {
+                detectStatusEl.textContent = `Done in ${(ms/1000).toFixed(2)}s`;
+            } else {
+                detectStatusEl.textContent = 'Done';
+            }
+        } catch (err) {
+            console.error('detectAndPlaceText error', err);
+            detectStatusEl.textContent = 'Detection failed';
+        } finally {
+            const btns = document.querySelectorAll('button');
+            btns.forEach(b => b.disabled = false);
+            refreshUIState();
+        }
+    }
+
+    prevBtn.addEventListener('click', async () => {
+        if (currentPageIndex > 0) {
+            await displayPage(currentPageIndex - 1);
+        }
+    });
+    nextBtn.addEventListener('click', async () => {
+        if (currentPageIndex < pages.length - 1) {
+            await displayPage(currentPageIndex + 1);
+        }
+    });
+
+    async function autoPlaceTexts(result) {
+        const boxes = result.boxes || [];
+        const texts = result.texts || [];
+        const norm = result.normalized_scale || 1000;
+
+        const defaultFont = result._selectedFont || fontSelect.value;
+        const defaultColor = getSelectedColor();
+        const chosenSize = parseInt(fontSizeInput.value, 10) || 20;
+
+        await ensureFontLoaded(defaultFont);
+
+        boxes.forEach((entry, idx) => {
+            const box = entry.box_2d || entry;
+            if (!Array.isArray(box) || box.length !== 4) return;
+            const [yMin, xMin, yMax, xMax] = box;
+            // map normalized -> canvas coordinates (background image is scaled to canvas size)
+            const left = (xMin / norm) * canvas.width + 6; // small padding
+            const top = (yMin / norm) * canvas.height + 6;
+            const boxWidth = ((xMax - xMin) / norm) * canvas.width;
+            const boxHeight = ((yMax - yMin) / norm) * canvas.height;
+
+            const textValue = (idx < texts.length) ? texts[idx] : 'Sample';
+            const fontSize = chosenSize;
+
+            const textObj = new fabric.IText(textValue, {
+                left,
+                top,
+                fontSize,
+                fontFamily: defaultFont,
+                fill: defaultColor,
+                selectable: true,
+                editable: true,
+            });
+
+            // Optional: constrain width by scaling down font if too wide
+            // After initial render, adjust if needed
+            canvas.add(textObj);
+        });
+        canvas.requestRenderAll();
+        saveState();
+    }
+
+    function overlayBoxes(result) {
+        const boxes = result.boxes || [];
+        const norm = result.normalized_scale || 1000;
+        // Remove existing overlays
+        const toRemove = canvas.getObjects('rect').filter(o => o?.isBoxOverlay);
+        toRemove.forEach(o => canvas.remove(o));
+
+        boxes.forEach((entry) => {
+            const box = entry.box_2d || entry;
+            if (!Array.isArray(box) || box.length !== 4) return;
+            const [yMin, xMin, yMax, xMax] = box;
+            const left = (xMin / norm) * canvas.width;
+            const top = (yMin / norm) * canvas.height;
+            const width = ((xMax - xMin) / norm) * canvas.width;
+            const height = ((yMax - yMin) / norm) * canvas.height;
+
+            const rect = new fabric.Rect({
+                left,
+                top,
+                width,
+                height,
+                fill: 'rgba(0, 128, 255, 0.15)',
+                stroke: '#0080FF',
+                strokeWidth: 1,
+                selectable: false,
+                evented: false,
+            });
+            rect.isBoxOverlay = true;
+            canvas.add(rect);
+        });
+        canvas.requestRenderAll();
+    }
+
+    // removed right-side JSON box per request
+
+    function setOverlaysVisible(visible) {
+        const overlays = canvas.getObjects('rect').filter(o => o?.isBoxOverlay);
+        overlays.forEach(o => o.set({ visible }));
+    }
+
+    async function download() {
+        const scale = 2;
+        if (window.isPDF && pages.length > 1) {
+            // Multi-page PDF export
+            const { jsPDF } = window.jspdf;
+            // Remember current page and save state
+            const originalIndex = currentPageIndex;
+            saveCurrentPageState();
+
+            // Render each page in sequence
+            const pageUrls = [];
+            for (let i = 0; i < pages.length; i++) {
+                await displayPage(i);
+                setOverlaysVisible(false);
+                const url = canvas.toDataURL({ format: 'png', multiplier: scale });
+                setOverlaysVisible(true);
+                pageUrls.push(url);
+            }
+
+            // Build PDF
+            const firstPageUrl = pageUrls[0];
+            const firstImg = new Image();
+            await new Promise(res => { firstImg.onload = res; firstImg.src = firstPageUrl; });
+            const pdf = new jsPDF({ orientation: 'portrait', unit: 'px', format: [firstImg.width, firstImg.height] });
+            pdf.addImage(firstPageUrl, 'PNG', 0, 0, firstImg.width, firstImg.height);
+            for (let i=1; i<pageUrls.length; i++) {
+                const pageUrl = pageUrls[i];
+                const im = new Image();
+                await new Promise(res => { im.onload = res; im.src = pageUrl; });
+                pdf.addPage([im.width, im.height], 'portrait');
+                pdf.addImage(pageUrl, 'PNG', 0, 0, im.width, im.height);
+            }
+            pdf.save('annotated-form.pdf');
+            // Restore original display
+            await displayPage(originalIndex);
+        } else {
+            // Single page/image export
+            setOverlaysVisible(false);
+            const dataURL = canvas.toDataURL({ format: 'png', multiplier: scale });
+            setOverlaysVisible(true);
+            const link = document.createElement('a');
+            link.href = dataURL;
+            link.download = window.isPDF ? 'annotated-form.png' : 'annotated-form.png';
+            link.click();
+        }
+    }
+
+
+    function getSelectedITextObjects() {
+        const active = canvas.getActiveObject();
+        if (!active) return [];
+        if (active.type === 'activeSelection') {
+            const arr = [];
+            active.forEachObject(o => { if (o.type === 'i-text') arr.push(o); });
+            return arr;
+        }
+        return active.type === 'i-text' ? [active] : [];
+    }
+
+    function syncControlsWithSelection() {
+        const items = getSelectedITextObjects();
+        if (items.length === 0) return;
+        const first = items[0];
+        // Font family
+        if (first.fontFamily) {
+            fontSelect.value = first.fontFamily;
+        }
+        // Font size
+        if (typeof first.fontSize === 'number') {
+            fontSizeInput.value = Math.max(8, Math.min(96, Math.round(first.fontSize)));
+        }
+        // Color (apply only if matches one of our options)
+        const opt = Array.from(colorSelect.options).find(o => o.value.toLowerCase() === String(first.fill || '').toLowerCase());
+        if (opt) colorSelect.value = opt.value;
+    }
+
+    fontSelect.onchange = () => {
+        const items = getSelectedITextObjects();
+        if (items.length === 0) return;
+        items.forEach(o => o.set({ fontFamily: fontSelect.value }));
+        canvas.renderAll();
+        saveState();
+    };
+
+    colorSelect.onchange = () => {
+        const items = getSelectedITextObjects();
+        if (items.length === 0) return;
+        const color = getSelectedColor();
+        items.forEach(o => o.set({ fill: color }));
+        canvas.renderAll();
+        saveState();
+    };
+
+    fontSizeInput.onchange = () => {
+        const size = parseInt(fontSizeInput.value, 10);
+        const items = getSelectedITextObjects();
+        if (items.length === 0 || !(size >= 8)) return;
+        items.forEach(o => o.set({ fontSize: size }));
+        canvas.renderAll();
+        saveState();
+    };
+
+    canvas.on('selection:created', syncControlsWithSelection);
+    canvas.on('selection:updated', syncControlsWithSelection);
+    
+    // Save state on object modifications
+    canvas.on('object:modified', function() {
+        saveState();
+    });
+    
+    canvas.on('text:changed', function() {
+        saveState();
+    });
+
+    // Free drawing mode (for signatures)
+    let isDrawing = false;
+    function applyBrushSettings() {
+        if (!canvas.freeDrawingBrush) return;
+        canvas.freeDrawingBrush.color = getSelectedColor();
+        canvas.freeDrawingBrush.width = 2.5;
+    }
+    function toggleDraw() {
+        isDrawing = !isDrawing;
+        canvas.isDrawingMode = isDrawing;
+        if (isDrawing) {
+            if (!canvas.freeDrawingBrush) {
+                canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
+            }
+            applyBrushSettings();
+            drawBtn.textContent = 'Stop Drawing';
+        } else {
+            drawBtn.textContent = 'Draw (signature)';
+            saveState();
+        }
+    }
+    colorSelect.addEventListener('change', applyBrushSettings);
+    canvas.on('path:created', function() { saveState(); });
+
+    // Ctrl+C, Ctrl+V, Ctrl+Z, Delete support
+    document.addEventListener('keydown', function (e) {
+        // Only handle shortcuts when not typing in text
+        const activeObj = canvas.getActiveObject();
+        const isEditingText = activeObj && activeObj.type === 'i-text' && activeObj.isEditing;
+        
+        if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ' && !isEditingText) {
+            undo();
+            e.preventDefault();
+        }
+        
+        if ((e.ctrlKey || e.metaKey) && e.code === 'KeyC' && !isEditingText) {
+            const active = canvas.getActiveObject();
+            if (active) active.clone(cloned => clipboard = cloned);
+            e.preventDefault();
+        }
+
+        if ((e.ctrlKey || e.metaKey) && e.code === 'KeyV' && !isEditingText) {
+            if (clipboard) {
+                clipboard.clone(clone => {
+                    clone.set({
+                        left: (clipboard.left || 100) + 20,
+                        top: (clipboard.top || 100) + 20,
+                        evented: true
+                    });
+
+                    if (clone.type === 'activeSelection') {
+                        clone.canvas = canvas;
+                        clone.forEachObject(obj => canvas.add(obj));
+                        clone.setCoords();
+                    } else {
+                        canvas.add(clone);
+                    }
+
+                    canvas.setActiveObject(clone);
+                    canvas.requestRenderAll();
+                    saveState(); // Save state after paste
+                });
+                e.preventDefault();
+            }
+        }
+
+        if ((e.code === 'Delete' || e.code === 'Backspace') && !isEditingText) {
+            const obj = canvas.getActiveObject();
+            if (obj) {
+                if (obj.type === 'activeSelection') {
+                    obj.forEachObject(o => canvas.remove(o));
+                    canvas.discardActiveObject();
+                } else {
+                    canvas.remove(obj);
+                }
+                canvas.requestRenderAll();
+                saveState(); // Save state after delete
+            }
+            e.preventDefault();
+        }
+    });
+</script>
+</body>
+</html>

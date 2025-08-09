@@ -1,0 +1,10 @@
+# Ignore everything by default
+*
+
+# Allow only the minimal runtime files
+!requirements.txt
+!fastapi_server.py
+!constants.py
+!index.html
+!dev-preload.jpg
+!fonts/Satisfy.ttf
