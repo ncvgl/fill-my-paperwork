@@ -2,9 +2,11 @@
 *
 
 # Allow only the minimal runtime files
+!Dockerfile
 !requirements.txt
 !fastapi_server.py
 !constants.py
 !index.html
 !dev-preload.jpg
-!fonts/Satisfy.ttf
+!fonts
+!fonts/**

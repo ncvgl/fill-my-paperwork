@@ -59,7 +59,7 @@
   <div class="header">
     <div class="tagline">Free • No Login • No Storage</div>
     <h2 class="title">Fill My Paperwork</h2>
-    <div class="contact">Contact: <a href="https://ncvgl.github.io" target="_blank" rel="noopener noreferrer">nathan.cavaglione@gmail.com</a></div>
+    <div class="contact"><a href="https://ncvgl.github.io" target="_blank" rel="noopener noreferrer">ncvgl.github.io</a></div>
   </div>
   <div class="toolbar top">
     <label class="file-control">
@@ -104,18 +104,14 @@
   </div>
 </div>
 
-<!-- Point frontend to backend on localhost:8080 -->
-<script>
-    window.LOCAL_API_URL = 'http://localhost:8080';
-</script>
-
 <script>
     const canvas = new fabric.Canvas('c');
     // Expose for tests/automation
     window.canvas = canvas;
     let clipboard = null;
     window.isPDF = false;  // track input type
-    const API_BASE = window.LOCAL_API_URL || 'http://localhost:5001';
+    // Always call backend on the same origin that served this page.
+    const API_BASE = window.location.origin;
     // Ensure a web font is loaded before rendering text
     const fontLoadCache = new Map();
     function ensureFontLoaded(fontFamily) {
@@ -133,6 +129,10 @@
         try { await ensureFontLoaded('Satisfy'); } catch (_) {}
     })();
     const API_URL = API_BASE + '/api/form/detect';
+    function getCookie(name) {
+        const match = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()\[\]\\\/\+^])/g, '\\$1') + '=([^;]*)'));
+        return match ? decodeURIComponent(match[1]) : undefined;
+    }
     let lastUploadedBlob = null; // file or blob we will send to backend
     const detectStatusEl = document.getElementById('detectStatus');
     const prevBtn = document.getElementById('prevBtn');
@@ -397,7 +397,7 @@
     async function detectAndPlaceText(fileOrBlob) {
         try {
             // prevent multiple clicks and show loading
-            startDetectCountdown(20);
+            startDetectCountdown(80);
             const btns = document.querySelectorAll('button');
             btns.forEach(b => b.disabled = true);
 
@@ -409,6 +409,10 @@
             const resp = await fetch(API_URL, {
                 method: 'POST',
                 body: formData,
+                credentials: 'same-origin',
+                headers: {
+                    'x-csrf-token': getCookie('_csrf') || ''
+                },
             });
             if (!resp.ok) {
                 console.warn('Detection failed', resp.status);

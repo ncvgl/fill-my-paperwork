@@ -1,5 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Query
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, UploadFile, File, Query, Request, Depends, HTTPException
 from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw
@@ -7,6 +6,10 @@ import io
 import json
 import os
 import time
+import secrets
+import hmac
+import hashlib
+import urllib.parse
 
 try:
     from google import genai
@@ -20,14 +23,8 @@ from constants import MODEL_NAME
 
 app = FastAPI()
 
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# NOTE: Do NOT enable permissive CORS. Since frontend and backend
+# are served from the same origin, same-origin requests do not need CORS.
 
 # Serve local fonts (e.g., Satisfy.ttf) under /fonts
 if os.path.isdir("fonts"):
@@ -111,14 +108,139 @@ Important rules:
 SMALL_BOX_PX_THRESHOLD = 30  # width in pixels considered too small to contain >3 letters
 
 
+SESSION_SECRET = (os.environ.get("SESSION_SECRET") or "dev-secret-change-me").encode("utf-8")
+SESSION_COOKIE_NAME = "_sess"
+CSRF_COOKIE_NAME = "_csrf"
+CSRF_HEADER_NAME = "x-csrf-token"
+
+
+def _sign_value(value: str) -> str:
+    signature = hmac.new(SESSION_SECRET, value.encode("utf-8"), hashlib.sha256).hexdigest()
+    return signature
+
+
+def _issue_session_and_csrf_cookies(resp: Response, base_url: str) -> None:
+    # Stateless signed session token and CSRF token (double submit cookie pattern)
+    session_id = secrets.token_urlsafe(32)
+    session_token = f"{session_id}.{_sign_value(session_id)}"
+    csrf_token = secrets.token_urlsafe(32)
+
+    # Always set cookies on landing page to establish a session
+    # Secure flags are on; SameSite=Lax is sufficient for same-origin
+    is_secure = base_url.startswith("https://")
+
+    resp.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session_token,
+        httponly=True,
+        secure=is_secure,
+        samesite="Lax",
+        path="/",
+    )
+    resp.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=csrf_token,
+        httponly=False,
+        secure=is_secure,
+        samesite="Lax",
+        path="/",
+    )
+
+
+def _first_header_value(raw: str | None) -> str:
+    if not raw:
+        return ""
+    return raw.split(",", 1)[0].strip()
+
+
+def _normalize_host(host: str) -> str:
+    # Lowercase and strip default ports
+    host = (host or "").strip().lower()
+    if host.endswith(":80"):
+        return host[:-3]
+    if host.endswith(":443"):
+        return host[:-4]
+    return host
+
+
+def _service_origin(request: Request) -> str:
+    """Best-effort origin for this service using proxy headers when present."""
+    proto = _first_header_value(request.headers.get("x-forwarded-proto")) or request.url.scheme or "http"
+    forwarded_host = _first_header_value(request.headers.get("x-forwarded-host"))
+    host = forwarded_host or _first_header_value(request.headers.get("host")) or urllib.parse.urlparse(str(request.base_url)).netloc
+    return f"{proto}://{host}"
+
+
+def _origin_of(url: str) -> str:
+    p = urllib.parse.urlparse(url)
+    if not p.scheme or not p.netloc:
+        return ""
+    return f"{p.scheme}://{p.netloc}"
+
+
+def _validate_same_origin(request: Request) -> None:
+    # Allow only requests originating from the same origin as this service.
+    # If both Origin and Referer are absent, allow and rely on CSRF/session checks.
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+
+    base = _service_origin(request)
+    base_host = _normalize_host(urllib.parse.urlparse(base).netloc)
+
+    if origin:
+        origin_host = _normalize_host(urllib.parse.urlparse(origin).netloc)
+        if origin_host != base_host:
+            raise HTTPException(status_code=403, detail="forbidden: cross-origin not allowed")
+        return
+    if referer:
+        referer_host = _normalize_host(urllib.parse.urlparse(referer).netloc)
+        if referer_host != base_host:
+            raise HTTPException(status_code=403, detail="forbidden: cross-origin not allowed")
+        return
+    # No Origin or Referer headers: allow; CSRF + session will still protect
+    return
+
+
+def _validate_session_and_csrf(request: Request) -> None:
+    # Validate signed session cookie
+    sess = request.cookies.get(SESSION_COOKIE_NAME)
+    if not sess or "." not in sess:
+        raise HTTPException(status_code=403, detail="forbidden: no session")
+    session_id, signature = sess.rsplit(".", 1)
+    if not hmac.compare_digest(signature, _sign_value(session_id)):
+        raise HTTPException(status_code=403, detail="forbidden: invalid session")
+
+    # For state-changing requests, require CSRF header matching CSRF cookie
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME)
+        csrf_header = request.headers.get(CSRF_HEADER_NAME)
+        if not csrf_cookie or not csrf_header or not hmac.compare_digest(csrf_cookie, csrf_header):
+            raise HTTPException(status_code=403, detail="forbidden: csrf failed")
+
+
+async def frontend_only(request: Request):
+    _validate_same_origin(request)
+    _validate_session_and_csrf(request)
+
+
 @app.get("/api/health")
-async def health():
+async def health(dep: None = Depends(frontend_only)):
     return {"status": "ok"}
 
+
+@app.get("/.well-known/appspecific/com.chrome.devtools.json")
+async def chrome_devtools_probe():
+    # Quiet Chrome DevTools probe with no content
+    return Response(status_code=204)
+
 @app.get("/")
-async def root_index():
-    # Serve the main UI
-    return FileResponse("index.html")
+async def root_index(request: Request):
+    # Serve the main UI and set session + CSRF cookies so only this frontend can call APIs
+    resp = FileResponse("index.html")
+    # Use proxy headers to compute the public origin for cookie flags
+    public_origin = _service_origin(request)
+    _issue_session_and_csrf_cookies(resp, base_url=public_origin)
+    return resp
 
 @app.get("/dev-preload.jpg")
 async def preload_image():
@@ -129,6 +251,7 @@ async def preload_image():
 async def detect(
     file: UploadFile = File(...),
     detector: str = Query(MODEL_NAME, description="Combined model for boxes+text"),
+    dep: None = Depends(frontend_only),
 ):
     t_route_start = time.perf_counter()
     content = await file.read()
@@ -183,6 +306,7 @@ async def draw_boxes(
         "gemini-2.5-flash-lite",
         description="Model for boxes-only: gemini-2.5-flash-lite or gemini-2.5-pro",
     ),
+    dep: None = Depends(frontend_only),
 ):
     """Detects fields and returns only bounding box locations as JSON."""
     content = await file.read()

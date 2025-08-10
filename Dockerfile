@@ -17,11 +17,12 @@ COPY requirements.txt ./requirements.txt
 RUN pip install -r requirements.txt
 
 # Copy source
-COPY . ./playground
+COPY . .
 
 # Env defaults (overridable)
 ENV GCP_LOCATION=europe-west9
 
 EXPOSE 8080
 
-CMD ["uvicorn", "playground.fastapi_server:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "fastapi_server:app", "--host", "0.0.0.0", "--port", "8080"]
+
