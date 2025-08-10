@@ -59,7 +59,7 @@
   <div class="header">
     <div class="tagline">Free • No Login • No Storage</div>
     <h2 class="title">Fill My Paperwork</h2>
-    <div class="contact">Contact: <a href="https://ncvgl.github.io" target="_blank" rel="noopener noreferrer">ntathan.cavaglione@gmail.com</a></div>
+    <div class="contact">Contact: <a href="https://ncvgl.github.io" target="_blank" rel="noopener noreferrer">nathan.cavaglione@gmail.com</a></div>
   </div>
   <div class="toolbar top">
     <label class="file-control">
@@ -104,6 +104,11 @@
   </div>
 </div>
 
+<!-- Point frontend to backend on localhost:8080 -->
+<script>
+    window.LOCAL_API_URL = 'http://localhost:8080';
+</script>
+
 <script>
     const canvas = new fabric.Canvas('c');
     // Expose for tests/automation
@@ -123,6 +128,10 @@
         fontLoadCache.set(key, p);
         return p;
     }
+    // Warm the default font so first render uses it immediately
+    ;(async function warmDefaultFont(){
+        try { await ensureFontLoaded('Satisfy'); } catch (_) {}
+    })();
     const API_URL = API_BASE + '/api/form/detect';
     let lastUploadedBlob = null; // file or blob we will send to backend
     const detectStatusEl = document.getElementById('detectStatus');
@@ -131,6 +140,27 @@
     const pageIndicator = document.getElementById('pageIndicator');
     const detectBtn = document.getElementById('detectBtn');
     const downloadBtn = document.getElementById('downloadBtn');
+    // Countdown handling for Detect Fields
+    let detectTimerInterval = null;
+    function clearDetectCountdown() {
+        if (detectTimerInterval) {
+            clearInterval(detectTimerInterval);
+            detectTimerInterval = null;
+        }
+    }
+    function startDetectCountdown(seconds = 20) {
+        clearDetectCountdown();
+        const endAt = Date.now() + seconds * 1000;
+        function tick() {
+            const remainingSeconds = Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+            detectStatusEl.textContent = `${remainingSeconds}s`;
+            if (remainingSeconds <= 0) {
+                clearDetectCountdown();
+            }
+        }
+        tick();
+        detectTimerInterval = setInterval(tick, 250);
+    }
     // Multi-page management
     let pages = [];        // array of dataURLs for background images
     let pageStates = [];   // array of serialized canvas JSON per page
@@ -367,7 +397,7 @@
     async function detectAndPlaceText(fileOrBlob) {
         try {
             // prevent multiple clicks and show loading
-            detectStatusEl.textContent = 'Detecting…';
+            startDetectCountdown(20);
             const btns = document.querySelectorAll('button');
             btns.forEach(b => b.disabled = true);
 
@@ -382,9 +412,12 @@
             });
             if (!resp.ok) {
                 console.warn('Detection failed', resp.status);
+                clearDetectCountdown();
+                detectStatusEl.textContent = 'Detection failed';
                 return;
             }
             const result = await resp.json();
+            clearDetectCountdown();
             if (!result || !Array.isArray(result.boxes)) return;
 
             // draw overlays and ensure new text uses the selected font
@@ -399,6 +432,7 @@
             }
         } catch (err) {
             console.error('detectAndPlaceText error', err);
+            clearDetectCountdown();
             detectStatusEl.textContent = 'Detection failed';
         } finally {
             const btns = document.querySelectorAll('button');

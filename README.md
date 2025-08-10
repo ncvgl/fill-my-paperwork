@@ -1,40 +1,32 @@
-# Fill My Paperwork - Cloud Run
+# Fill My Paperwork
 
-This deploys the FastAPI server and the frontend (`index.html`) as a single Cloud Run service, public, request-based, minimal cost.
+This deploys the `fastapi_server.py` and the  `index.html` frontend as a single Cloud Run service.
 
-## Prereqs
-- `gcloud` installed and authenticated
-- Project: set `$PROJECT` accordingly
+## Requirements
 - Vertex AI, Gemini, Cloud Run, Cloud Build, Artifact Registry enabled
 
-## Build and deploy
+## Deploy
 
 ```bash
 SERVICE=fill-my-papers
 IMAGE=eu.gcr.io/$PROJECT/$SERVICE:latest
-
-Build: `gcloud builds submit --project $PROJECT --tag $IMAGE .`
-
-Deploy (public, minimal): `gcloud run deploy $SERVICE --project $PROJECT --region $REGION --image $IMAGE --platform managed --allow-unauthenticated --min-instances=0 --max-instances=2 --cpu=1 --memory=512Mi --port=8080 --timeout=360s`
-
-Set service env (optional): `gcloud run services update $SERVICE --project $PROJECT --region $REGION --set-env-vars=GCP_PROJECT=$PROJECT,GCP_LOCATION=$REGION`
+gcloud builds submit --project $PROJECT --tag $IMAGE . # Build
+gcloud run deploy $SERVICE --project $PROJECT --region $REGION --image $IMAGE --platform managed --allow-unauthenticated --min-instances=0 --max-instances=2 --cpu=1 --memory=512Mi --port=8080 --timeout=360s # Deploy
 ```
-
-After deploy, Cloud Run will print the service URL. Open it in your browser.
-
-## Redeploy after changes
-1. Edit code in `playground/`
-2. Rebuild and deploy: `gcloud builds submit --project $PROJECT --tag $IMAGE . && gcloud run deploy $SERVICE --project $PROJECT --region $REGION --image $IMAGE --platform managed --allow-unauthenticated`
 
 ## Local run
+~~python3 -m http.server 8000~~ # frontend is served already by the backend
 ```bash
-pip install -r playground/requirements.txt
-uvicorn playground.fastapi_server:app --host 0.0.0.0 --port 8080
-# open http://localhost:8080/
+uvicorn fastapi_server:app --host 0.0.0.0 --port 8080 --reload # open http://localhost:8080/
 ```
 
-## Notes
-- The server serves `/` -> `playground/index.html` and `/dev-preload.jpg` for the preload asset.
-- API: `POST /api/form/detect` with multipart `file`.
-- Set `GCP_PROJECT` and `GCP_LOCATION` env vars if different from defaults.
-- To reduce costs, Cloud Run is set to `--min-instances=0` and a low `--max-instances`.
+Rebuild and deploy: 
+```
+gcloud builds submit --project $PROJECT --tag $IMAGE . && gcloud run deploy $SERVICE --project $PROJECT --region $REGION --image $IMAGE --platform managed --allow-unauthenticated`
+```
+
+## Run tests
+```bash
+pytest -n auto -q # backend
+npx playwright test --config playground/playwright.config.ts # frontend
+```

@@ -29,6 +29,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Serve local fonts (e.g., Satisfy.ttf) under /fonts
+if os.path.isdir("fonts"):
+    app.mount("/fonts", StaticFiles(directory="fonts"), name="fonts")
+
 
 def _get_client():
     if genai is None:
@@ -114,11 +118,11 @@ async def health():
 @app.get("/")
 async def root_index():
     # Serve the main UI
-    return FileResponse("playground/index.html")
+    return FileResponse("index.html")
 
 @app.get("/dev-preload.jpg")
 async def preload_image():
-    return FileResponse("playground/dev-preload.jpg")
+    return FileResponse("dev-preload.jpg")
 
 
 @app.post("/api/form/detect")
