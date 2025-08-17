@@ -2,12 +2,13 @@
 
 # Demo
 
-![Demo](demo.png)
-
-# Try it out
-
-Service currently served at: <br>
+Available at: <br>
 [https://fill-my-papers-424605661533.europe-west9.run.app](https://fill-my-papers-424605661533.europe-west9.run.app)
+
+![demo.gif](demo.gif)
+
+<br>
+<br>
 
 ## Run app locally
 ```bash
