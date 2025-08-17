@@ -13,6 +13,8 @@ Available at: <br>
 ## Run app locally
 ```bash
 cd $WORKDIR
+export GCP_PROJECT=$(gcloud config get-value project)  # or use a .env in the same dir
+gcloud auth application-default login  # to use Gemini
 uvicorn fastapi_server:app --host 0.0.0.0 --port 8080 --reload # open http://localhost:8080/
 ```
 ~~python3 -m http.server 8000~~ # frontend is served already by the backend

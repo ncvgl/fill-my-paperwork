@@ -501,11 +501,30 @@
     function overlayBoxes(result) {
         const boxes = result.boxes || [];
         const norm = result.normalized_scale || 1000;
+        // Array of beautiful colors for the overlay rectangles
+        const overlayColors = [
+            '#FF6B6B', // Coral Red
+            '#4ECDC4', // Turquoise
+            '#45B7D1', // Sky Blue
+            '#96CEB4', // Mint Green
+            '#FECA57', // Golden Yellow
+            '#FF9FF3', // Pink
+            '#54A0FF', // Blue
+            '#5F27CD', // Purple
+            '#00D2D3', // Cyan
+            '#FF9F43', // Orange
+            '#10AC84', // Green
+            '#EE5A6F', // Rose
+            '#C44569', // Magenta
+            '#40407A', // Dark Blue
+            '#706FD3'  // Lavender
+        ];
+        
         // Remove existing overlays
         const toRemove = canvas.getObjects('rect').filter(o => o?.isBoxOverlay);
         toRemove.forEach(o => canvas.remove(o));
 
-        boxes.forEach((entry) => {
+        boxes.forEach((entry, index) => {
             const box = entry.box_2d || entry;
             if (!Array.isArray(box) || box.length !== 4) return;
             const [yMin, xMin, yMax, xMax] = box;
@@ -514,14 +533,18 @@
             const width = ((xMax - xMin) / norm) * canvas.width;
             const height = ((yMax - yMin) / norm) * canvas.height;
 
+            // Cycle through colors if we have more boxes than colors
+            const colorIndex = index % overlayColors.length;
+            const strokeColor = overlayColors[colorIndex];
+
             const rect = new fabric.Rect({
                 left,
                 top,
                 width,
                 height,
-                fill: 'rgba(0, 128, 255, 0.15)',
-                stroke: '#0080FF',
-                strokeWidth: 1,
+                fill: 'transparent',
+                stroke: strokeColor,
+                strokeWidth: 2,
                 selectable: false,
                 evented: false,
             });

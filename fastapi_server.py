@@ -10,6 +10,10 @@ import secrets
 import hmac
 import hashlib
 import urllib.parse
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 try:
     from google import genai
@@ -295,6 +299,9 @@ async def detect(
             },
         })
     except Exception as e:
+        import traceback
+        print(f"ERROR in /api/form/detect: {str(e)}")
+        print(f"TRACEBACK: {traceback.format_exc()}")
         total_ms = int((time.perf_counter() - t_route_start) * 1000)
         return JSONResponse({"error": str(e), "timings_ms": {"total_ms": total_ms, "image_open_ms": image_open_ms}}, status_code=500)
 
